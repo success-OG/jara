@@ -11,6 +11,7 @@ import { AI_TOOLS, listAiRuns } from '@/lib/ai-tools'
 import { listReferrals, rewardProgress } from '@/lib/rewards'
 import { DRILL_PRICE_GD, EXAMS, SCOUT_PRICE_GD, daysUntil, getJobs, verificationStatus } from '@/lib/agent/jobs'
 import { listActivity, type User, ensureRefCode } from '@/lib/users'
+import { quizConfig, quizPhase } from '@/lib/quiz/service'
 
 export async function userState(user: User) {
   const cfg = serverConfig()
@@ -67,6 +68,8 @@ export async function userState(user: User) {
         daysLeft: verification.expiresAt ? Math.ceil((verification.expiresAt - Date.now()) / 86_400_000) : null,
       },
     },
+    // Campus Quiz window (config only, no reads), for the dashboard card.
+    campus: campusState(),
     snapshot: snap,
     activity,
     messages,
@@ -83,6 +86,17 @@ export async function userState(user: User) {
       treasury: cfg.chain.mode === 'celo' ? safeTreasury() : null,
       limitGd: DEFAULT_LIMIT_GD,
     },
+  }
+}
+
+/** A mistyped quiz setting closes the quiz; it must never break loading the app. */
+function campusState() {
+  try {
+    const quiz = quizConfig()
+    return { quiz: { phase: quizPhase(quiz), startAt: quiz.configured ? quiz.startAt : null, endAt: quiz.configured ? quiz.endAt : null, perCorrectGd: quiz.perCorrectGd, requireFlowstate: quiz.requireFlowstate } }
+  } catch (err) {
+    console.error('[campus] quiz configuration error', err instanceof Error ? err.message : err)
+    return undefined
   }
 }
 

@@ -189,6 +189,50 @@ const SCHEMA = [
     scout_last_at INTEGER,
     verify_warned_at INTEGER
   )`,
+  // Campus Quiz: one run per verified identity per event.
+  `CREATE TABLE IF NOT EXISTS quiz_runs (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    root_address TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users (id),
+    question_ids TEXT NOT NULL,
+    current INTEGER NOT NULL DEFAULT 0,
+    correct INTEGER NOT NULL DEFAULT 0,
+    total_ms INTEGER NOT NULL DEFAULT 0,
+    earned_gd INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    UNIQUE (event_id, root_address)
+  )`,
+  `CREATE INDEX IF NOT EXISTS quiz_runs_board_idx ON quiz_runs (event_id, finished_at, correct, total_ms)`,
+  `CREATE TABLE IF NOT EXISTS quiz_answers (
+    run_id TEXT NOT NULL REFERENCES quiz_runs (id),
+    idx INTEGER NOT NULL,
+    question_id TEXT NOT NULL,
+    option_order TEXT NOT NULL,
+    issued_at INTEGER NOT NULL,
+    deadline INTEGER NOT NULL,
+    answered_at INTEGER,
+    choice INTEGER,
+    correct INTEGER,
+    elapsed_ms INTEGER,
+    payout TEXT NOT NULL DEFAULT 'none',
+    paid_gd INTEGER NOT NULL DEFAULT 0,
+    tx_hash TEXT,
+    PRIMARY KEY (run_id, idx)
+  )`,
+  // G$ reserved from the quiz pools before any payout is signed; kept across retries and restarts.
+  `CREATE TABLE IF NOT EXISTS quiz_budget (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, pool TEXT NOT NULL, amount_gd INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS quiz_bonus (
+    event_id TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    root_address TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users (id),
+    amount_gd INTEGER NOT NULL,
+    tx_hash TEXT,
+    paid_at INTEGER,
+    PRIMARY KEY (event_id, rank)
+  )`,
   `CREATE TABLE IF NOT EXISTS scout_seen (
     user_id TEXT NOT NULL REFERENCES users (id),
     link TEXT NOT NULL,

@@ -153,7 +153,29 @@ export function serverConfig() {
       authToken: process.env.DATABASE_AUTH_TOKEN || undefined,
     },
     cronSecret: process.env.CRON_SECRET ?? '',
+    // The Campus Quiz. Closed until the window and the payout pool are set.
+    quiz: {
+      eventId: process.env.QUIZ_EVENT_ID || 'campus-launch-1',
+      startAt: time('QUIZ_START_AT'),
+      endAt: time('QUIZ_END_AT'),
+      perCorrectGd: num('QUIZ_PER_CORRECT_GD', 250),
+      questionSeconds: num('QUIZ_QUESTION_SECONDS', 25),
+      questionsPerRun: num('QUIZ_QUESTIONS_PER_RUN', 10),
+      poolCapGd: num('QUIZ_POOL_CAP_GD', 0),
+      top10PoolGd: num('QUIZ_TOP10_POOL_GD', 0),
+      // Quiz entry needs at least one Flowstate vote for Jara. Set to false to open the quiz without it.
+      requireFlowstate: process.env.QUIZ_REQUIRE_FLOWSTATE !== 'false',
+    },
   }
+}
+
+/** An ISO date (2026-11-28T15:00:00+01:00) or epoch milliseconds; 0 when unset. */
+function time(name: string): number {
+  const raw = process.env[name]
+  if (!raw) return 0
+  const value = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw)
+  if (!Number.isFinite(value)) throw new Error(`${name} must be an ISO date or epoch milliseconds, got "${raw}"`)
+  return value
 }
 
 /** Test phone numbers are only accepted when no real money can move. */

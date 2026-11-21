@@ -13,6 +13,7 @@ import { Markdown } from './Markdown'
 import { walletClaimerMessage, walletKeyExportMessage, walletLoginMessage } from '@/lib/wallet-login'
 import { spendingPolicyAbi } from '@/lib/spending-policy'
 import { useSheetDialog } from './useSheetDialog'
+import { CampusCard, type CampusState } from './CampusLaunch'
 import { DashboardNav, dashboardView, type DashboardView } from './DashboardNav'
 import { DailyChallenge } from './DailyChallenge'
 import { FlowVote } from './FlowVote'
@@ -83,6 +84,7 @@ interface State {
   snapshot: { jars: JarView[]; totalGd: number; freeGd: number; freeNgn: number; ngnPerGd: number; walletGd: number | null; gas: { celo: number; perTxCelo: number } | null; mode: 'wallet' | 'jar'; claimedGd: number; limitLeftGd: number; limitTotalGd: number; feesOwedGd: number }
   activity: Activity[]
   messages: Msg[]
+  campus?: CampusState
   config: { chainMode: 'celo' | 'mock'; keylessAvailable: boolean; spendingContract: string | null; policyDays: number; provider: string; billsLive: boolean; llm: string; treasury: string | null; limitGd: number }
 }
 
@@ -907,6 +909,7 @@ function Dashboard({ state, setState, flash, onProfile }: { state: State; setSta
               </section>
             </div>
             <aside className="grid min-w-0 content-start gap-5">
+              <CampusCard campus={state.campus} onVote={() => navigate('vote')} />
               <AgentPanel state={state} busy={busy === 'agent'} onRun={runAgent} lastSteps={lastSteps} />
               <AiLaunch state={state} />
               <div className="rounded-2xl border border-dashed border-forest/20 p-5">
