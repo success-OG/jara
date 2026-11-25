@@ -9,7 +9,7 @@ const HOUR = 3_600_000
 Object.assign(process.env, {
   DATABASE_URL: `file:${directory}/test.db`, CHAIN_MODE: 'mock', TOPUP_PROVIDER: 'mock', GD_NGN_RATE: '1', CRON_SECRET: 'cron',
   QUIZ_EVENT_ID: 'test-event', QUIZ_START_AT: String(Date.now() - HOUR), QUIZ_END_AT: String(Date.now() + HOUR),
-  QUIZ_PER_CORRECT_GD: '250', QUIZ_QUESTION_SECONDS: '25', QUIZ_QUESTIONS_PER_RUN: '10', QUIZ_POOL_CAP_GD: '2500', QUIZ_TOP10_POOL_GD: '10000', QUIZ_REQUIRE_FLOWSTATE: 'false',
+  QUIZ_PER_CORRECT_GD: '250', QUIZ_QUESTION_SECONDS: '25', QUIZ_QUESTIONS_PER_RUN: '10', QUIZ_POOL_CAP_GD: '2500', QUIZ_TOP10_POOL_GD: '10000', QUIZ_TOP10_PRIZE_NGN: '0', QUIZ_REQUIRE_FLOWSTATE: 'false',
 })
 const { db, run } = require('../src/lib/db.ts')
 const users = require('../src/lib/users.ts')
@@ -150,6 +150,38 @@ test('leaderboard ranks by correct answers then total time; Top 10 bonuses pay o
   assert.equal(await balance(fast) - before[0], 3000)
   assert.equal((await quiz.leaderboard(null)).bonusPaid, true)
   await assert.rejects(quiz.startQuiz(await player()), (err) => err.code === 'quiz_closed')
+})
+
+test('naira prize: each of the Top 10 wins the same naira amount in G$, priced once, and nothing per answer when that is off', async () => {
+  const saved = { ...process.env }
+  Object.assign(process.env, { QUIZ_EVENT_ID: 'prize-event', QUIZ_START_AT: String(Date.now() - HOUR), QUIZ_END_AT: String(Date.now() + HOUR),
+    QUIZ_PER_CORRECT_GD: '0', QUIZ_POOL_CAP_GD: '', QUIZ_TOP10_PRIZE_NGN: '5000', GD_NGN_RATE: '0.2' })
+  try {
+    assert.equal(quiz.quizConfig().configured, true)
+    const winner = await player(), runnerUp = await player(), zero = await player()
+    const before = [await balance(winner), await balance(runnerUp), await balance(zero)]
+    for (const [user, rightCount] of [[winner, 5], [runnerUp, 2], [zero, 0]]) {
+      let view = await quiz.startQuiz(user)
+      for (let i = 0; i < view.total; i++) view = (await quiz.answerQuestion(user, { runId: view.runId, index: i, choice: await choiceFor(view, i < rightCount) })).run
+    }
+    assert.equal(await balance(winner), before[0], 'no G$ per answer when QUIZ_PER_CORRECT_GD=0')
+    const board = await quiz.leaderboard(null)
+    assert.deepEqual(board.top.map((p) => p.prizeNgn), [5000, 5000, 0])
+    assert.equal((await quiz.quizHome(winner)).quiz.top10PrizeNgn, 5000)
+
+    process.env.QUIZ_END_AT = String(Date.now() - 1)
+    const result = await quiz.finalizeTop10()
+    // ₦5,000 at ₦0.2 per G$ = G$ 25,000 each; nobody with zero correct answers.
+    assert.deepEqual(result.bonuses.map((b) => [b.rank, b.amountGd, b.status]), [[1, 25000, 'paid'], [2, 25000, 'paid']])
+    // The rate moving afterwards changes nothing: amounts were frozen and paid once.
+    process.env.GD_NGN_RATE = '0.1'
+    await quiz.finalizeTop10()
+    assert.deepEqual([await balance(winner) - before[0], await balance(runnerUp) - before[1], await balance(zero) - before[2]].map(Math.round), [25000, 25000, 0])
+    const activity = (await run("SELECT title FROM activity WHERE user_id = ? AND type = 'reward'", [winner.id])).rows
+    assert.deepEqual(activity.map((r) => r.title), ['Campus Quiz prize: #1 in the Top 10 (₦5,000 in G$)'])
+  } finally {
+    for (const k of ['QUIZ_EVENT_ID', 'QUIZ_START_AT', 'QUIZ_END_AT', 'QUIZ_PER_CORRECT_GD', 'QUIZ_POOL_CAP_GD', 'QUIZ_TOP10_PRIZE_NGN', 'GD_NGN_RATE']) process.env[k] = saved[k]
+  }
 })
 
 after(async () => {

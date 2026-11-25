@@ -93,7 +93,7 @@ export async function userState(user: User) {
 function campusState() {
   try {
     const quiz = quizConfig()
-    return { quiz: { phase: quizPhase(quiz), startAt: quiz.configured ? quiz.startAt : null, endAt: quiz.configured ? quiz.endAt : null, perCorrectGd: quiz.perCorrectGd, requireFlowstate: quiz.requireFlowstate } }
+    return { quiz: { phase: quizPhase(quiz), startAt: quiz.configured ? quiz.startAt : null, endAt: quiz.configured ? quiz.endAt : null, perCorrectGd: quiz.perCorrectGd, top10PrizeNgn: quiz.top10PrizeNgn, requireFlowstate: quiz.requireFlowstate } }
   } catch (err) {
     console.error('[campus] quiz configuration error', err instanceof Error ? err.message : err)
     return undefined

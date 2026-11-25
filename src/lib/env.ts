@@ -163,6 +163,9 @@ export function serverConfig() {
       questionsPerRun: num('QUIZ_QUESTIONS_PER_RUN', 10),
       poolCapGd: num('QUIZ_POOL_CAP_GD', 0),
       top10PoolGd: num('QUIZ_TOP10_POOL_GD', 0),
+      // Each of the Top 10 wins this much naira, paid in G$ at the rate when the Top 10 is frozen.
+      // When set, it replaces the QUIZ_TOP10_POOL_GD split.
+      top10PrizeNgn: num('QUIZ_TOP10_PRIZE_NGN', 5000),
       // Quiz entry needs at least one Flowstate vote for Jara. Set to false to open the quiz without it.
       requireFlowstate: process.env.QUIZ_REQUIRE_FLOWSTATE !== 'false',
     },

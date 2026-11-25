@@ -4,6 +4,7 @@ import { sendGdFromTreasury } from '../chain'
 import { rewardDestination } from '../claimers'
 import { atomic, run } from '../db'
 import { serverConfig } from '../env'
+import { ngnPerGd } from '../price'
 import { withUserLock } from '../jars'
 import { getUserById, type User } from '../users'
 import { authorizedUser } from '../wallet-authorization'
@@ -24,8 +25,16 @@ export class QuizError extends Error {
 
 /** Allowance for the answer's trip to the server after the on-screen timer ends. */
 export const NETWORK_GRACE_MS = 2_000
-/** Top 10 bonus split, in percent of QUIZ_TOP10_POOL_GD, by rank. */
+/** Top 10 bonus split, in percent of QUIZ_TOP10_POOL_GD, by rank (only when there is no naira prize). */
 export const TOP10_SPLIT = [30, 20, 15, 10, 8, 6, 5, 3, 2, 1] as const
+
+/** G$ for one Top 10 place: the naira prize at today's rate, or the old pool split. */
+async function top10Gd(cfg: ReturnType<typeof quizConfig>, rank: number): Promise<number> {
+  if (cfg.top10PrizeNgn > 0) return Math.ceil(cfg.top10PrizeNgn / (await ngnPerGd()))
+  return Math.floor((cfg.top10PoolGd * TOP10_SPLIT[rank - 1]) / 100)
+}
+/** Reservation cap for the Top 10 pool. A naira prize is bounded by ten places, not a G$ pool. */
+const top10Cap = (cfg: ReturnType<typeof quizConfig>) => (cfg.top10PrizeNgn > 0 ? Number.MAX_SAFE_INTEGER : cfg.top10PoolGd)
 
 export type QuizPhase = 'off' | 'soon' | 'open' | 'closed'
 
@@ -33,9 +42,10 @@ export function quizConfig() {
   const q = serverConfig().quiz
   const problem = !q.startAt || !q.endAt ? 'QUIZ_START_AT and QUIZ_END_AT are not set'
     : q.endAt <= q.startAt ? 'QUIZ_END_AT must be after QUIZ_START_AT'
-    : !Number.isSafeInteger(q.poolCapGd) || q.poolCapGd <= 0 ? 'QUIZ_POOL_CAP_GD is not set'
-    : !Number.isSafeInteger(q.perCorrectGd) || q.perCorrectGd <= 0 ? 'QUIZ_PER_CORRECT_GD must be a positive whole number'
+    : !Number.isSafeInteger(q.perCorrectGd) || q.perCorrectGd < 0 ? 'QUIZ_PER_CORRECT_GD must be a whole number (0 turns per-answer G$ off)'
+    : q.perCorrectGd > 0 && (!Number.isSafeInteger(q.poolCapGd) || q.poolCapGd <= 0) ? 'QUIZ_POOL_CAP_GD is not set'
     : !Number.isSafeInteger(q.top10PoolGd) || q.top10PoolGd < 0 ? 'QUIZ_TOP10_POOL_GD must be a whole number'
+    : !Number.isSafeInteger(q.top10PrizeNgn) || q.top10PrizeNgn < 0 ? 'QUIZ_TOP10_PRIZE_NGN must be a whole number of naira'
     : !Number.isSafeInteger(q.questionsPerRun) || q.questionsPerRun < 1 || q.questionsPerRun > QUIZ_QUESTIONS.length ? `QUIZ_QUESTIONS_PER_RUN must be 1–${QUIZ_QUESTIONS.length}`
     : !Number.isFinite(q.questionSeconds) || q.questionSeconds < 5 ? 'QUIZ_QUESTION_SECONDS must be at least 5'
     : null
@@ -206,6 +216,7 @@ async function payAnswer(user: User, r: RunRow, idx: number): Promise<{ status: 
   if (!a || Number(a.correct) !== 1) return { status: 'none', paidGd: 0 }
   if (a.payout === 'paid') return { status: 'paid', paidGd: Number(a.paid_gd) }
   if (a.payout === 'pool_empty') return { status: 'pool_empty', paidGd: 0 }
+  if (cfg.perCorrectGd <= 0) return { status: 'none', paidGd: 0 }
   const opId = `quiz:${r.event_id}:${r.root_address}:${idx}`
   const amountGd = cfg.perCorrectGd
   if (!(await reserve(opId, 'answers', amountGd, cfg.poolCapGd))) {
@@ -291,6 +302,7 @@ export async function leaderboard(viewer: User | null) {
     }
   }
   const bonus = (await run('SELECT rank, amount_gd, paid_at FROM quiz_bonus WHERE event_id = ? ORDER BY rank', [cfg.eventId])).rows
+  const frozen = new Map(bonus.map((b) => [Number(b.rank), Number(b.amount_gd)]))
   return {
     eventId: cfg.eventId,
     phase: quizPhase(cfg),
@@ -301,7 +313,8 @@ export async function leaderboard(viewer: User | null) {
       wallet: short(String(x.root_address)),
       correct: Number(x.correct),
       totalSeconds: Math.round(Number(x.total_ms) / 100) / 10,
-      bonusGd: cfg.top10PoolGd && Number(x.correct) > 0 ? Math.floor((cfg.top10PoolGd * TOP10_SPLIT[i]) / 100) : 0,
+      bonusGd: frozen.get(i + 1) ?? (!cfg.top10PrizeNgn && cfg.top10PoolGd && Number(x.correct) > 0 ? Math.floor((cfg.top10PoolGd * TOP10_SPLIT[i]) / 100) : 0),
+      prizeNgn: cfg.top10PrizeNgn > 0 && Number(x.correct) > 0 ? cfg.top10PrizeNgn : 0,
     })),
     you,
     bonusPaid: bonus.length > 0 && bonus.every((b) => b.paid_at),
@@ -325,9 +338,12 @@ export async function finalizeTop10() {
   const top = (await run(`SELECT id, root_address, user_id FROM quiz_runs WHERE event_id = ? AND finished_at IS NOT NULL AND correct > 0
     ORDER BY correct DESC, total_ms ASC, finished_at ASC, id ASC LIMIT 10`, [cfg.eventId])).rows
   // Frozen on first finalize: a later re-run pays the same ranks to the same people.
-  for (const [i, row] of top.entries()) {
-    await run('INSERT OR IGNORE INTO quiz_bonus (event_id, rank, root_address, user_id, amount_gd) VALUES (?, ?, ?, ?, ?)',
-      [cfg.eventId, i + 1, String(row.root_address), String(row.user_id), Math.floor((cfg.top10PoolGd * TOP10_SPLIT[i]) / 100)])
+  const alreadyFrozen = Number((await run('SELECT COUNT(*) AS n FROM quiz_bonus WHERE event_id = ?', [cfg.eventId])).rows[0].n) > 0
+  if (!alreadyFrozen) {
+    for (const [i, row] of top.entries()) {
+      await run('INSERT OR IGNORE INTO quiz_bonus (event_id, rank, root_address, user_id, amount_gd) VALUES (?, ?, ?, ?, ?)',
+        [cfg.eventId, i + 1, String(row.root_address), String(row.user_id), await top10Gd(cfg, i + 1)])
+    }
   }
   const results: { rank: number; amountGd: number; status: string }[] = []
   for (const b of (await run('SELECT * FROM quiz_bonus WHERE event_id = ? ORDER BY rank', [cfg.eventId])).rows) {
@@ -338,14 +354,14 @@ export async function finalizeTop10() {
     if (!user) { results.push({ rank, amountGd, status: 'no_user' }); continue }
     const opId = `quiz:${cfg.eventId}:top:${rank}:${b.root_address}`
     try {
-      if (!(await reserve(opId, 'top10', amountGd, cfg.top10PoolGd))) { results.push({ rank, amountGd, status: 'pool_empty' }); continue }
+      if (!(await reserve(opId, 'top10', amountGd, top10Cap(cfg)))) { results.push({ rank, amountGd, status: 'pool_empty' }); continue }
       const amount = parseEther(String(amountGd))
       const hash = await withUserLock(user.id, async () => sendGdFromTreasury(await rewardDestination(user, opId), amount, opId), { waitMs: 15_000 })
       await atomic(async (tx) => {
         const paid = await tx.execute({ sql: 'UPDATE quiz_bonus SET tx_hash = ?, paid_at = ? WHERE event_id = ? AND rank = ? AND paid_at IS NULL', args: [hash, Date.now(), cfg.eventId, rank] })
         if (!paid.rowsAffected) return
         await tx.execute({ sql: 'INSERT OR IGNORE INTO rewards_paid (user_id, reward_key, amount_gd, created_at) VALUES (?, ?, ?, ?)', args: [user.id, `quiz:${cfg.eventId}:top10`, amountGd, Date.now()] })
-        await tx.execute({ sql: "INSERT OR IGNORE INTO activity (user_id, type, amount_wei, tx_hash, title, operation_id, created_at) VALUES (?, 'reward', ?, ?, ?, ?, ?)", args: [user.id, String(amount), hash, `Campus Quiz Top 10 bonus (#${rank})`, opId, Date.now()] })
+        await tx.execute({ sql: "INSERT OR IGNORE INTO activity (user_id, type, amount_wei, tx_hash, title, operation_id, created_at) VALUES (?, 'reward', ?, ?, ?, ?, ?)", args: [user.id, String(amount), hash, cfg.top10PrizeNgn > 0 ? `Campus Quiz prize: #${rank} in the Top 10 (₦${cfg.top10PrizeNgn.toLocaleString('en-NG')} in G$)` : `Campus Quiz Top 10 bonus (#${rank})`, opId, Date.now()] })
       })
       results.push({ rank, amountGd, status: 'paid' })
     } catch (err) {
@@ -371,7 +387,8 @@ export async function quizHome(user: User | null) {
       perCorrectGd: cfg.perCorrectGd,
       questionSeconds: cfg.questionSeconds,
       questionsPerRun: cfg.questionsPerRun,
-      top10PoolGd: cfg.top10PoolGd,
+      top10PoolGd: cfg.top10PrizeNgn > 0 ? 0 : cfg.top10PoolGd,
+      top10PrizeNgn: cfg.top10PrizeNgn,
       poolLeftGd: Math.max(0, cfg.poolCapGd - used),
       requireFlowstate: cfg.requireFlowstate,
     },

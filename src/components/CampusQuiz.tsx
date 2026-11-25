@@ -7,11 +7,11 @@ import { ApiError, readApiResponse, responseMessage } from '@/lib/api-response'
 type Question = { index: number; topic: string; prompt: string; options: string[]; deadline: number; serverNow: number }
 type Run = { runId: string; total: number; correct: number; earnedGd: number; totalMs: number; finished: boolean; payoutsPending: number; question: Question | null }
 type Home = {
-  quiz: { eventId: string; phase: 'off' | 'soon' | 'open' | 'closed'; startAt: number | null; endAt: number | null; perCorrectGd: number; questionSeconds: number; questionsPerRun: number; top10PoolGd: number; poolLeftGd: number; requireFlowstate: boolean }
+  quiz: { eventId: string; phase: 'off' | 'soon' | 'open' | 'closed'; startAt: number | null; endAt: number | null; perCorrectGd: number; questionSeconds: number; questionsPerRun: number; top10PoolGd: number; top10PrizeNgn: number; poolLeftGd: number; requireFlowstate: boolean }
   signedIn: boolean; connected: boolean; supported: boolean; playedElsewhere: boolean; run: Run | null
 }
 type Result = { correct: boolean; timedOut: boolean; correctOption: number | null; payout: string; paidGd: number }
-type Board = { players: number; top: { rank: number; name: string; wallet: string; correct: number; totalSeconds: number; bonusGd: number }[]; you: { rank: number; correct: number; totalMs: number } | null; bonusPaid: boolean }
+type Board = { players: number; top: { rank: number; name: string; wallet: string; correct: number; totalSeconds: number; bonusGd: number; prizeNgn: number }[]; you: { rank: number; correct: number; totalMs: number } | null; bonusPaid: boolean }
 
 async function request<T>(url: string, body?: object): Promise<T> {
   const res = await fetch(url, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : undefined)
@@ -89,7 +89,9 @@ export function CampusQuiz() {
   const rules = (
     <ul className="grid gap-1.5 text-[15px] font-medium text-ink/75">
       <li>• {quiz.questionsPerRun} questions, {quiz.questionSeconds} seconds each</li>
-      <li>• G$ {gd(quiz.perCorrectGd)} for every correct answer, paid to your wallet</li>
+      {quiz.top10PrizeNgn > 0 && <li>• <b>Top 10 each win ₦{gd(quiz.top10PrizeNgn)}</b>, paid in G$ to your wallet (most correct, then fastest)</li>}
+      {quiz.top10PrizeNgn > 0 && <li>• Spend it on airtime and data right here in Jara</li>}
+      {quiz.perCorrectGd > 0 && <li>• G$ {gd(quiz.perCorrectGd)} for every correct answer, paid to your wallet</li>}
       {quiz.top10PoolGd > 0 && <li>• Top 10 share a G$ {gd(quiz.top10PoolGd)} bonus (most correct, then fastest)</li>}
       <li>• One run per verified person. No repeats.</li>
     </ul>
@@ -129,7 +131,7 @@ export function CampusQuiz() {
             <p className="text-[11px] font-bold tracking-[0.14em] text-forest/70 uppercase">Live now · closes {quiz.endAt ? wat(quiz.endAt) : ''}</p>
             <h1 className="mt-1 text-3xl font-bold tracking-tight">Jara Campus Quiz</h1>
             <div className="mt-4">{rules}</div>
-            {quiz.poolLeftGd < quiz.perCorrectGd && <p className="mt-3 rounded-xl bg-[#faf4dc] p-3 text-sm font-semibold">The per-answer G$ pool has run out. You can still play for the Top 10.</p>}
+            {quiz.perCorrectGd > 0 && quiz.poolLeftGd < quiz.perCorrectGd && <p className="mt-3 rounded-xl bg-[#faf4dc] p-3 text-sm font-semibold">The per-answer G$ pool has run out. You can still play for the Top 10.</p>}
             <p className="mt-4 text-sm font-semibold text-ink/55">The clock starts as soon as each question appears. Ready?</p>
             <button className={`${primary} mt-3 w-full`} disabled={busy} onClick={() => void begin()}>{busy ? 'Starting…' : 'Start my run'}</button>
           </section>
@@ -170,7 +172,7 @@ export function CampusQuiz() {
         </section>
       )}
 
-      {(run?.finished || quiz.phase === 'closed' || quiz.phase === 'open') && <Leaderboard key={run?.finished ? 'done' : 'live'} top10PoolGd={quiz.top10PoolGd} />}
+      {(run?.finished || quiz.phase === 'closed' || quiz.phase === 'open') && <Leaderboard key={run?.finished ? 'done' : 'live'} prizes={quiz.top10PoolGd > 0 || quiz.top10PrizeNgn > 0} />}
       {error && <p role="alert" className="rounded-xl bg-[#fde8e2] p-3 text-sm font-semibold text-[#8a2a12]">{error}</p>}
     </Shell>
   )
@@ -183,7 +185,7 @@ function Feedback({ result, perCorrect }: { result: Result; perCorrect: number }
   return <p role="status" className={`mb-3 rounded-xl px-3 py-2 text-sm font-bold ${result.correct ? 'bg-[#e9f3e4] text-forest' : 'bg-[#fbeee6] text-[#8a3a12]'}`}>{text}</p>
 }
 
-function Leaderboard({ top10PoolGd }: { top10PoolGd: number }) {
+function Leaderboard({ prizes }: { prizes: boolean }) {
   const [board, setBoard] = useState<Board | null>(null)
   useEffect(() => {
     const get = () => request<Board>('/api/quiz/leaderboard').then(setBoard).catch(() => {})
@@ -204,12 +206,12 @@ function Leaderboard({ top10PoolGd }: { top10PoolGd: number }) {
           {board.top.map((p) => (
             <li key={p.rank} className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 odd:bg-[#f7f8f2]">
               <span className="min-w-0 truncate text-sm font-semibold"><span className="mr-2 font-bold text-forest">#{p.rank}</span>{p.name} <span className="text-ink/40">{p.wallet}</span></span>
-              <span className="shrink-0 text-xs font-bold text-ink/60">{p.correct} ✓ · {p.totalSeconds}s{top10PoolGd > 0 && p.bonusGd > 0 ? ` · G$ ${gd(p.bonusGd)}` : ''}</span>
+              <span className="shrink-0 text-xs font-bold text-ink/60">{p.correct} ✓ · {p.totalSeconds}s{p.prizeNgn > 0 ? ` · ₦${gd(p.prizeNgn)}` : prizes && p.bonusGd > 0 ? ` · G$ ${gd(p.bonusGd)}` : ''}</span>
             </li>
           ))}
         </ol>
       )}
-      {top10PoolGd > 0 && <p className="mt-3 text-xs font-semibold text-ink/50">{board.bonusPaid ? 'Top 10 bonuses have been paid.' : 'Top 10 bonuses are paid after the quiz closes.'}</p>}
+      {prizes && <p className="mt-3 text-xs font-semibold text-ink/50">{board.bonusPaid ? 'Top 10 prizes have been paid.' : 'Top 10 prizes are paid in G$ after the quiz closes.'}</p>}
     </section>
   )
 }
